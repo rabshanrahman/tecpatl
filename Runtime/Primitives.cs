@@ -76,6 +76,9 @@ namespace Tecpatl
         public float Gap = 0.7f;
         /// <summary>No new stroke for Refractory s after one ends (the return movement is not a stroke).</summary>
         public float Refractory = 1.0f;
+        /// <summary>Strokes starting within SettleTime s of the limb appearing (first sample, or after a gap) are ignored:
+        /// bringing the hand into view is not a gesture.</summary>
+        public float SettleTime = 0f;
     }
 
     /// <summary>Stable-pose primitive: a label becomes stable after PoseRun identical consecutive results.</summary>

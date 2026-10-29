@@ -49,6 +49,9 @@ namespace Tecpatl
         public string Name, From;
         public string[] To;
         public float Within = 2f, Hold = 1f;
+        /// <summary>Identical consecutive raw results that count as having been in From (0 = use the stable pose).
+        /// A transitional pose (e.g. opening the hand before a grab) is often too brief to become stable.</summary>
+        public int FromRun;
 
         public bool IsTarget(string pose) => To != null && Array.IndexOf(To, pose) >= 0;
     }
@@ -74,6 +77,18 @@ namespace Tecpatl
         public float MaxRelease = float.PositiveInfinity;
     }
 
+    /// <summary>
+    /// Declares a drag: while the main contact is on (e.g. a pinch), the Point's in-plane displacement from where the
+    /// contact started reaches Distance m within Tolerance degrees of one of Directions. Measured from the contact's
+    /// start for as long as it is held, so slow drags count (the stroke primitive needs StrokeConfirm within StrokeWindow).
+    /// </summary>
+    public sealed class ContactDragRule
+    {
+        public string Name;
+        public Direction Directions = Direction.Right;
+        public float Distance = 0.08f, Tolerance = 60f, MinHold = 0.15f, MaxTime = 3f;
+    }
+
     public struct GestureEvent
     {
         public float Time;
@@ -92,6 +107,7 @@ namespace Tecpatl
         public readonly List<StrokeRule> StrokeRules = new List<StrokeRule>();
         public readonly List<PoseSequenceRule> PoseRules = new List<PoseSequenceRule>();
         public readonly List<ContactReleaseRule> ReleaseRules = new List<ContactReleaseRule>();
+        public readonly List<ContactDragRule> DragRules = new List<ContactDragRule>();
 
         public event Action<GestureEvent> OnGesture;
         /// <summary>Every finished stroke with the rule result (null when nothing matched); for diagnostics.</summary>
@@ -105,6 +121,10 @@ namespace Tecpatl
         // per release rule: contact on, since when, and the time of the last qualifying release (NaN = none)
         readonly Dictionary<ContactReleaseRule, (bool on, float since, float released, float lastIn)> m_Rel = new Dictionary<ContactReleaseRule, (bool, float, float, float)>();
         float[] m_StableAt;
+        float m_TrackStart = float.NaN;
+        string m_RawPose; int m_RawRun;
+        MotionSample? m_ContactStart;
+        readonly HashSet<ContactDragRule> m_DragFired = new HashSet<ContactDragRule>();
 
         public GestureChain(PrimitiveSettings settings) { Settings = settings ?? new PrimitiveSettings(); }
 
@@ -113,13 +133,17 @@ namespace Tecpatl
 
         public void Push(MotionSample s)
         {
+            if (float.IsNaN(m_TrackStart)) m_TrackStart = s.Time;
             if (m_Stroke.LastTime > float.NegativeInfinity && s.Time - m_Stroke.LastTime > Settings.Gap)
             {
                 EndStroke(m_Stroke.Lost(s.Time, Settings), s.Time, StrokeChannel.Point);
                 EndStroke(m_AnchorStroke.Lost(s.Time, Settings), s.Time, StrokeChannel.Anchor);
                 ResetState();
+                m_TrackStart = s.Time;
             }
 
+            m_RawRun = s.Pose == m_RawPose ? m_RawRun + 1 : 1;
+            m_RawPose = s.Pose;
             if (m_Pose.Push(s.Time, s.Pose, Settings.PoseRun))
             {
                 m_StableAt = Mid(s.Point, s.Body);
@@ -128,7 +152,7 @@ namespace Tecpatl
             foreach (var r in PoseRules)
             {
                 var (lastFrom, fired) = m_Seq.TryGetValue(r, out var st) ? st : (float.NegativeInfinity, false);
-                if (m_Pose.Stable == r.From) lastFrom = s.Time;
+                if (r.FromRun > 0 ? (m_RawPose == r.From && m_RawRun >= r.FromRun) : m_Pose.Stable == r.From) lastFrom = s.Time;
                 if (r.IsTarget(m_Pose.Stable) && !fired && m_Pose.StableSince - lastFrom <= r.Within && s.Time - m_Pose.StableSince >= r.Hold)
                 {
                     fired = true;
@@ -165,6 +189,28 @@ namespace Tecpatl
             }
 
             m_Contact.Push(s.Contact, Settings.ContactOn, Settings.ContactOff);
+            if (!Contact) { m_ContactStart = null; m_DragFired.Clear(); }
+            else
+            {
+                if (m_ContactStart == null) m_ContactStart = s;
+                var a = m_ContactStart.Value;
+                float dx = Vec.Dot(Vec.Sub(s.Point, a.Point), a.Right), dy = Vec.Dot(Vec.Sub(s.Point, a.Point), a.Up);
+                float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+                foreach (var r in DragRules)
+                {
+                    if (m_DragFired.Contains(r) || dist < r.Distance || s.Time - a.Time < r.MinHold || s.Time - a.Time > r.MaxTime) continue;
+                    foreach (var d in new[] { Direction.Right, Direction.Left, Direction.Up, Direction.Down })
+                    {
+                        if ((r.Directions & d) == 0) continue;
+                        float ax = d == Direction.Right ? 1 : d == Direction.Left ? -1 : 0, ay = d == Direction.Up ? 1 : d == Direction.Down ? -1 : 0;
+                        double ang = Math.Acos(Math.Max(-1, Math.Min(1, (dx * ax + dy * ay) / dist))) * 180 / Math.PI;
+                        if (ang > r.Tolerance) continue;
+                        m_DragFired.Add(r);
+                        OnGesture?.Invoke(new GestureEvent { Time = s.Time, Name = r.Name.Replace("{dir}", d.ToString().ToLowerInvariant()), Position = (float[])a.Point.Clone() });
+                        break;
+                    }
+                }
+            }
             EndStroke(m_Stroke.Push(s, m_Pose.Stable, Contact, Settings), s.Time, StrokeChannel.Point);
             if (s.Anchor != null)
             {
@@ -188,7 +234,7 @@ namespace Tecpatl
             var s = stroke.Value;
             s.Channel = channel;
             string name = null;
-            if (s.PointTravel >= Settings.MinStroke)
+            if (s.PointTravel >= Settings.MinStroke && !(s.Start - m_TrackStart < Settings.SettleTime))
                 foreach (var r in StrokeRules)
                     if (r.Matches(s)) { name = r.EventName(s); break; }
             OnStroke?.Invoke(s, name);
@@ -203,6 +249,8 @@ namespace Tecpatl
             m_AnchorStroke.Reset();
             m_Seq.Clear();
             m_Rel.Clear();
+            m_RawPose = null; m_RawRun = 0;
+            m_ContactStart = null; m_DragFired.Clear();
         }
 
         static float[] Mid(float[] a, float[] b)
