@@ -24,6 +24,9 @@ namespace Tecpatl
         public float[] Right, Up;
         /// <summary>Contact distance ratio (e.g. thumb-index distance / palm length); NaN when not measured.</summary>
         public float Contact;
+        /// <summary>Extra contact distance ratios, addressed by index from ContactReleaseRule.Channel
+        /// (e.g. [0] = thumb-middle distance / palm length); null when none.</summary>
+        public float[] Contacts;
         /// <summary>Per-result static label from any classifier (unsmoothed); null when none.</summary>
         public string Pose;
     }

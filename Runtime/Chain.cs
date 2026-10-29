@@ -40,11 +40,38 @@ namespace Tecpatl
         static bool Ok(Require r, bool v) => r == Require.Any || (r == Require.Yes) == v;
     }
 
-    /// <summary>Declares a gesture made of two stable poses: From, then To within Within s, To held Hold s.</summary>
+    /// <summary>
+    /// Declares a gesture made of two stable poses: From, then any of To within Within s, held Hold s
+    /// (e.g. open palm -> fist; or a snap: thumb on middle finger -> point / palm facing you, Hold 0).
+    /// </summary>
     public sealed class PoseSequenceRule
     {
-        public string Name, From, To;
+        public string Name, From;
+        public string[] To;
         public float Within = 2f, Hold = 1f;
+
+        public bool IsTarget(string pose) => To != null && Array.IndexOf(To, pose) >= 0;
+    }
+
+    /// <summary>
+    /// Declares a gesture made of a contact that is held, then released into a stable pose: contact Channel on
+    /// (ratio &lt; On) for at least MinHold s, then off (ratio &gt; Off), and one of the To poses becomes stable
+    /// within Within s of the release (e.g. a finger snap: thumb on middle finger, released into point).
+    /// The contact is measured directly, so the held pose does not need its own classifier label.
+    /// </summary>
+    public sealed class ContactReleaseRule
+    {
+        public string Name;
+        public int Channel;
+        public float On = 0.3f, Off = 0.6f, MinHold = 0.3f, Within = 0.5f;
+        public string[] To;
+        /// <summary>Optional: while the contact is held, Contacts[HoldChannel] must stay above HoldAbove (e.g. the
+        /// middle finger extended, which tells a snap set-up from a fist). -1 = no condition.</summary>
+        public int HoldChannel = -1;
+        public float HoldAbove;
+        /// <summary>Longest time (s) from the last sample still in contact (ratio &lt; On) to the first released sample
+        /// (ratio &gt; Off): a snap releases between two consecutive results, a slow hand change does not.</summary>
+        public float MaxRelease = float.PositiveInfinity;
     }
 
     public struct GestureEvent
@@ -64,6 +91,7 @@ namespace Tecpatl
         public readonly PrimitiveSettings Settings;
         public readonly List<StrokeRule> StrokeRules = new List<StrokeRule>();
         public readonly List<PoseSequenceRule> PoseRules = new List<PoseSequenceRule>();
+        public readonly List<ContactReleaseRule> ReleaseRules = new List<ContactReleaseRule>();
 
         public event Action<GestureEvent> OnGesture;
         /// <summary>Every finished stroke with the rule result (null when nothing matched); for diagnostics.</summary>
@@ -74,6 +102,8 @@ namespace Tecpatl
         readonly StrokeDetector m_Stroke = new StrokeDetector();
         readonly StrokeDetector m_AnchorStroke = new StrokeDetector();
         readonly Dictionary<PoseSequenceRule, (float lastFrom, bool fired)> m_Seq = new Dictionary<PoseSequenceRule, (float, bool)>();
+        // per release rule: contact on, since when, and the time of the last qualifying release (NaN = none)
+        readonly Dictionary<ContactReleaseRule, (bool on, float since, float released, float lastIn)> m_Rel = new Dictionary<ContactReleaseRule, (bool, float, float, float)>();
         float[] m_StableAt;
 
         public GestureChain(PrimitiveSettings settings) { Settings = settings ?? new PrimitiveSettings(); }
@@ -99,12 +129,39 @@ namespace Tecpatl
             {
                 var (lastFrom, fired) = m_Seq.TryGetValue(r, out var st) ? st : (float.NegativeInfinity, false);
                 if (m_Pose.Stable == r.From) lastFrom = s.Time;
-                if (m_Pose.Stable == r.To && !fired && m_Pose.StableSince - lastFrom <= r.Within && s.Time - m_Pose.StableSince >= r.Hold)
+                if (r.IsTarget(m_Pose.Stable) && !fired && m_Pose.StableSince - lastFrom <= r.Within && s.Time - m_Pose.StableSince >= r.Hold)
                 {
                     fired = true;
                     OnGesture?.Invoke(new GestureEvent { Time = s.Time, Name = r.Name, Position = m_StableAt });
                 }
                 m_Seq[r] = (lastFrom, fired);
+            }
+
+            foreach (var r in ReleaseRules)
+            {
+                var (on, since, released, lastIn) = m_Rel.TryGetValue(r, out var st) ? st : (false, 0f, float.NaN, 0f);
+                float ratio = s.Contacts != null && r.Channel < s.Contacts.Length ? s.Contacts[r.Channel] : float.NaN;
+                if (!float.IsNaN(ratio))
+                {
+                    bool holdOk = r.HoldChannel < 0 || (s.Contacts != null && r.HoldChannel < s.Contacts.Length && s.Contacts[r.HoldChannel] > r.HoldAbove);
+                    if (on && ratio < r.On) lastIn = s.Time;
+                    if (!on && ratio < r.On && holdOk) { on = true; since = lastIn = s.Time; }
+                    else if (on && ratio <= r.Off && !holdOk) on = false;   // hold condition broken: not this gesture
+                    else if (on && ratio > r.Off)
+                    {
+                        on = false;
+                        if (s.Time - since >= r.MinHold && s.Time - lastIn <= r.MaxRelease) released = s.Time;
+                    }
+                }
+                // fire when a target pose has become stable at or after the release (stabilizing takes a few results)
+                if (!float.IsNaN(released) && Array.IndexOf(r.To, m_Pose.Stable) >= 0 && m_Pose.StableSince >= released - 0.1f)
+                {
+                    if (m_Pose.StableSince - released <= r.Within)
+                        OnGesture?.Invoke(new GestureEvent { Time = s.Time, Name = r.Name, Position = Mid(s.Point, s.Body) });
+                    released = float.NaN;
+                }
+                else if (!float.IsNaN(released) && s.Time - released > r.Within + 1f) released = float.NaN;
+                m_Rel[r] = (on, since, released, lastIn);
             }
 
             m_Contact.Push(s.Contact, Settings.ContactOn, Settings.ContactOff);
@@ -145,6 +202,7 @@ namespace Tecpatl
             m_Stroke.Reset();
             m_AnchorStroke.Reset();
             m_Seq.Clear();
+            m_Rel.Clear();
         }
 
         static float[] Mid(float[] a, float[] b)
