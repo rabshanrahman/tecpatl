@@ -37,5 +37,14 @@ namespace Tecpatl
             for (int i = 0; i < a.Length; i++) r[i] = a[i] - b[i];
             return r;
         }
+
+        /// <summary>Angle between two vectors in degrees (0 when either is zero).</summary>
+        public static float AngleDeg(float[] a, float[] b)
+        {
+            float la = Length(a), lb = Length(b);
+            if (la < 1e-12f || lb < 1e-12f) return 0f;
+            double c = Math.Max(-1.0, Math.Min(1.0, Dot(a, b) / (la * lb)));
+            return (float)(Math.Acos(c) * 180.0 / Math.PI);
+        }
     }
 }
