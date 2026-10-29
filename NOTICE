@@ -1,0 +1,8 @@
+tecpatl
+Copyright 2026 Deep Auras
+
+This product is a clean-room implementation of the method described in
+"Jackknife: A Reliable Recognizer with Few Samples and Many Modalities"
+(Taranta et al., CHI 2017, https://doi.org/10.1145/3025453.3026002).
+It contains no code from the authors' reference implementation and does not
+implement synthetic gesture generation (gesture path stochastic resampling).

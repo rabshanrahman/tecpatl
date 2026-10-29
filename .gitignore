@@ -1,0 +1,6 @@
+*.meta
+bin/
+obj/
+.vs/
+.idea/
+SPEC.md

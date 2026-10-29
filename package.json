@@ -1,0 +1,10 @@
+{
+  "name": "com.deepauras.tecpatl",
+  "version": "0.1.0",
+  "displayName": "tecpatl",
+  "description": "Few-example dynamic gesture recognizer (DTW on gesture-path direction vectors, 1-NN, correction factors, real-data rejection thresholds). Clean-room implementation from Taranta et al., CHI 2017. Apache-2.0.",
+  "unity": "2021.3",
+  "license": "Apache-2.0",
+  "author": { "name": "Deep Auras" },
+  "keywords": ["gesture", "recognition", "dtw", "hand-tracking", "xr"]
+}
