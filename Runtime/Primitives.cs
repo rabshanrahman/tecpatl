@@ -22,6 +22,8 @@ namespace Tecpatl
         public float[] Normal;
         /// <summary>Unit axes of the plane strokes are measured in (e.g. head-yaw right and world up). Depth is ignored.</summary>
         public float[] Right, Up;
+        /// <summary>Unit forward axis (e.g. head-yaw forward), for excursions along depth such as a poke. Null = none.</summary>
+        public float[] Forward;
         /// <summary>Contact distance ratio (e.g. thumb-index distance / palm length); NaN when not measured.</summary>
         public float Contact;
         /// <summary>Extra contact distance ratios, addressed by index from ContactReleaseRule.Channel
@@ -69,6 +71,9 @@ namespace Tecpatl
         public string ContactPose;
         /// <summary>A stroke is confirmed when the Point's net in-plane displacement over StrokeWindow s exceeds StrokeConfirm m.</summary>
         public float StrokeWindow = 0.8f, StrokeConfirm = 0.106f;
+        /// <summary>Optional lower bar for vertical strokes: confirmed when the in-plane up/down component alone exceeds
+        /// it (vertical reach can be limited, e.g. by a camera's view). NaN = only StrokeConfirm.</summary>
+        public float StrokeConfirmVertical = float.NaN;
         /// <summary>Speed (m/s) below which the Point counts as still: the stroke starts at the last still sample and ends after two.</summary>
         public float StillSpeed = 0.08f;
         public float MaxStroke = 1.5f, MinStroke = 0.053f;
@@ -149,7 +154,9 @@ namespace Tecpatl
                     int j = i;
                     while (j > 0 && s.Time - m_Hist[j - 1].S.Time <= p.StrokeWindow) j--;
                     var a = m_Hist[j].S;
-                    if (s.Time - a.Time >= 0.6f * p.StrokeWindow && InPlane(Vec.Sub(s.Point, a.Point), a).len > p.StrokeConfirm)
+                    var net = InPlane(Vec.Sub(s.Point, a.Point), a);
+                    if (s.Time - a.Time >= 0.6f * p.StrokeWindow &&
+                        (net.len > p.StrokeConfirm || (!float.IsNaN(p.StrokeConfirmVertical) && Math.Abs(net.y) > p.StrokeConfirmVertical)))
                     {
                         int k = i, trailing = 0;
                         while (k > j && m_Hist[k].Speed < p.StillSpeed) { k--; trailing++; }   // motion may have just ended
