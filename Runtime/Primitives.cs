@@ -15,6 +15,9 @@ namespace Tecpatl
         public float[] Point;
         /// <summary>Point that moves only when the whole limb moves (e.g. the wrist). Separates limb motion from finger motion.</summary>
         public float[] Body;
+        /// <summary>Second stroke channel: a point that moves when the limb pivots at the Body (e.g. the knuckle
+        /// midpoint, pivoting at the wrist). Null = channel off.</summary>
+        public float[] Anchor;
         /// <summary>Orientation normal (e.g. the palm normal), for turns.</summary>
         public float[] Normal;
         /// <summary>Unit axes of the plane strokes are measured in (e.g. head-yaw right and world up). Depth is ignored.</summary>
@@ -31,6 +34,7 @@ namespace Tecpatl
         public float Start, End, TurnDeg;
         /// <summary>In-plane displacement (right, up) of the Point and of the Body, onset to end, metres.</summary>
         public float PointX, PointY, BodyX, BodyY;
+        public StrokeChannel Channel;
         public string PoseAtStart, PoseAtEnd;
         public bool ContactAtStart, ContactAtEnd;
         /// <summary>Point position (world frame) at motion onset: where the stroke started.</summary>
@@ -44,6 +48,9 @@ namespace Tecpatl
             ? (PointX > 0 ? Direction.Right : Direction.Left)
             : (PointY > 0 ? Direction.Up : Direction.Down);
     }
+
+    /// <summary>Which tracked point a stroke belongs to.</summary>
+    public enum StrokeChannel { Point, Anchor }
 
     [Flags]
     public enum Direction { None = 0, Left = 1, Right = 2, Up = 4, Down = 8, Any = Left | Right | Up | Down }

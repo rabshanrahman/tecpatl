@@ -15,6 +15,8 @@ namespace Tecpatl
     {
         /// <summary>Event name; "{dir}" is replaced with left/right/up/down. Null = consume without an event.</summary>
         public string Name;
+        /// <summary>Stroke channel the rule applies to: the Point (e.g. fingertip) or the Anchor (e.g. knuckles).</summary>
+        public StrokeChannel Channel = StrokeChannel.Point;
         public Direction Directions = Direction.Any;
         /// <summary>Stable pose required at stroke onset; null = any.</summary>
         public string PoseAtStart;
@@ -25,7 +27,7 @@ namespace Tecpatl
 
         public bool Matches(Stroke s)
         {
-            if ((Directions & s.Direction) == 0) return false;
+            if (s.Channel != Channel || (Directions & s.Direction) == 0) return false;
             if (PoseAtStart != null && s.PoseAtStart != PoseAtStart) return false;
             if (!Ok(ContactAtStart, s.ContactAtStart) || !Ok(ContactAtEnd, s.ContactAtEnd)) return false;
             if (s.TurnDeg < MinTurnDeg || s.TurnDeg >= MaxTurnDeg) return false;
@@ -70,6 +72,7 @@ namespace Tecpatl
         PoseStabilizer m_Pose = new PoseStabilizer();
         ContactDetector m_Contact = new ContactDetector();
         readonly StrokeDetector m_Stroke = new StrokeDetector();
+        readonly StrokeDetector m_AnchorStroke = new StrokeDetector();
         readonly Dictionary<PoseSequenceRule, (float lastFrom, bool fired)> m_Seq = new Dictionary<PoseSequenceRule, (float, bool)>();
         float[] m_StableAt;
 
@@ -82,7 +85,8 @@ namespace Tecpatl
         {
             if (m_Stroke.LastTime > float.NegativeInfinity && s.Time - m_Stroke.LastTime > Settings.Gap)
             {
-                EndStroke(m_Stroke.Lost(s.Time, Settings), s.Time);
+                EndStroke(m_Stroke.Lost(s.Time, Settings), s.Time, StrokeChannel.Point);
+                EndStroke(m_AnchorStroke.Lost(s.Time, Settings), s.Time, StrokeChannel.Anchor);
                 ResetState();
             }
 
@@ -104,20 +108,28 @@ namespace Tecpatl
             }
 
             m_Contact.Push(s.Contact, Settings.ContactOn, Settings.ContactOff);
-            EndStroke(m_Stroke.Push(s, m_Pose.Stable, Contact, Settings), s.Time);
+            EndStroke(m_Stroke.Push(s, m_Pose.Stable, Contact, Settings), s.Time, StrokeChannel.Point);
+            if (s.Anchor != null)
+            {
+                var a = s; a.Point = s.Anchor;   // the anchor channel runs the same stroke primitive on the Anchor
+                EndStroke(m_AnchorStroke.Push(a, m_Pose.Stable, Contact, Settings), s.Time, StrokeChannel.Anchor);
+            }
         }
 
         /// <summary>Call once per tracker result: ends the stroke of a limb that left tracking.</summary>
         public void Tick(float now)
         {
             if (m_Stroke.LastTime > float.NegativeInfinity && now - m_Stroke.LastTime > Settings.Gap)
-                EndStroke(m_Stroke.Lost(now, Settings), now);
+                EndStroke(m_Stroke.Lost(now, Settings), now, StrokeChannel.Point);
+            if (m_AnchorStroke.LastTime > float.NegativeInfinity && now - m_AnchorStroke.LastTime > Settings.Gap)
+                EndStroke(m_AnchorStroke.Lost(now, Settings), now, StrokeChannel.Anchor);
         }
 
-        void EndStroke(Stroke? stroke, float now)
+        void EndStroke(Stroke? stroke, float now, StrokeChannel channel)
         {
             if (stroke == null) return;
             var s = stroke.Value;
+            s.Channel = channel;
             string name = null;
             if (s.PointTravel >= Settings.MinStroke)
                 foreach (var r in StrokeRules)
@@ -131,6 +143,7 @@ namespace Tecpatl
             m_Pose = new PoseStabilizer();
             m_Contact = new ContactDetector();
             m_Stroke.Reset();
+            m_AnchorStroke.Reset();
             m_Seq.Clear();
         }
 
