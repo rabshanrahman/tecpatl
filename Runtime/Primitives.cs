@@ -22,12 +22,10 @@ namespace Tecpatl
         public float[] Normal;
         /// <summary>Unit axes of the plane strokes are measured in (e.g. head-yaw right and world up). Depth is ignored.</summary>
         public float[] Right, Up;
-        /// <summary>Unit forward axis (e.g. head-yaw forward), for excursions along depth such as a poke. Null = none.</summary>
-        public float[] Forward;
         /// <summary>Contact distance ratio (e.g. thumb-index distance / palm length); NaN when not measured.</summary>
         public float Contact;
-        /// <summary>Extra contact distance ratios, addressed by index from ContactReleaseRule.Channel
-        /// (e.g. [0] = thumb-middle distance / palm length); null when none.</summary>
+        /// <summary>Extra scalar channels, addressed by index from rules (ContactReleaseRule.Channel / HoldChannel):
+        /// e.g. [0] = thumb-middle distance / palm length, [1] = middle-finger extension. Null when none.</summary>
         public float[] Contacts;
         /// <summary>Per-result static label from any classifier (unsmoothed); null when none.</summary>
         public string Pose;

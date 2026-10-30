@@ -72,6 +72,11 @@ namespace Tecpatl
         /// (e.g. the middle finger extended, which tells a snap set-up from a fist or a point). -1 = no condition.</summary>
         public int HoldChannel = -1;
         public float HoldPeakAbove;
+        /// <summary>Require an external impulse (e.g. the sound of a snap, see GestureChain.PushImpulse) with peak at
+        /// least ImpulseMinPeak and at most ImpulseMaxMs long, within [release - ImpulseBefore, release + ImpulseAfter].
+        /// With an impulse required, To may be null (no end pose needed). Thresholds are per chain, i.e. per hand.</summary>
+        public bool RequireImpulse;
+        public float ImpulseMinPeak = 0.03f, ImpulseMaxMs = 100f, ImpulseBefore = 0.6f, ImpulseAfter = 0.3f;
         /// <summary>Longest time (s) from the last sample still in contact (ratio &lt; On) to the first released sample
         /// (ratio &gt; Off): a snap releases between two consecutive results, a slow hand change does not.</summary>
         public float MaxRelease = float.PositiveInfinity;
@@ -87,30 +92,6 @@ namespace Tecpatl
         public string Name;
         public Direction Directions = Direction.Right;
         public float Distance = 0.08f, Tolerance = 60f, MinHold = 0.15f, MaxTime = 3f;
-    }
-
-    public enum Axis { Right, Up, Forward }
-    public enum Reference { None, Anchor, Body }
-
-    /// <summary>
-    /// Declares an out-and-back movement of the Point along one axis (e.g. a click: the fingertip dips down relative
-    /// to the knuckles and comes back; a poke: the fingertip pushes forward and comes back). The signal is the Point
-    /// minus the Reference point, projected on Axis x Sign. Fires when it rises Depth m above its lowest value of the
-    /// last BaseWindow s and then falls back by Return x the excursion, all within MaxDuration s.
-    /// </summary>
-    public sealed class ExcursionRule
-    {
-        public string Name;
-        public Axis Axis = Axis.Up;
-        public float Sign = -1f;
-        public Reference Reference = Reference.Anchor;
-        public float Depth = 0.02f, Return = 0.5f, MaxDuration = 0.6f, BaseWindow = 0.4f, Refractory = 0.3f;
-        /// <summary>Stable pose required when the excursion starts; null = any.</summary>
-        public string PoseAtStart;
-        /// <summary>Change of the Point relative to the Body (e.g. fingertip relative to wrist) between the excursion's
-        /// start and its peak, in m: at least FlexMin (the finger moved on the hand, e.g. a tap) and below RigidMax
-        /// (the finger stayed aligned with the hand, e.g. a poke). 0 / +inf = no condition.</summary>
-        public float FlexMin = 0f, RigidMax = float.PositiveInfinity;
     }
 
     public struct GestureEvent
@@ -132,9 +113,26 @@ namespace Tecpatl
         public readonly List<PoseSequenceRule> PoseRules = new List<PoseSequenceRule>();
         public readonly List<ContactReleaseRule> ReleaseRules = new List<ContactReleaseRule>();
         public readonly List<ContactDragRule> DragRules = new List<ContactDragRule>();
-        public readonly List<ExcursionRule> ExcursionRules = new List<ExcursionRule>();
 
         public event Action<GestureEvent> OnGesture;
+        /// <summary>The contact primitive switched on or off (time, on, Point at that moment), e.g. a pinch closing/opening.
+        /// Raw contact only (not the ContactPose): no pose-stabilizing delay.</summary>
+        public event Action<float, bool, float[]> OnContact;
+        readonly List<(float t, float peak, float ms)> m_Impulses = new List<(float, float, float)>();
+
+        /// <summary>An external impulse at time t (same clock as samples), e.g. a sharp sound: peak 0..1, length in ms.</summary>
+        public void PushImpulse(float t, float peak, float ms)
+        {
+            m_Impulses.Add((t, peak, ms));
+            while (m_Impulses.Count > 0 && t - m_Impulses[0].t > 3f) m_Impulses.RemoveAt(0);
+        }
+
+        bool ImpulseNear(ContactReleaseRule r, float released)
+        {
+            foreach (var (t, peak, ms) in m_Impulses)
+                if (t >= released - r.ImpulseBefore && t <= released + r.ImpulseAfter && peak >= r.ImpulseMinPeak && ms <= r.ImpulseMaxMs) return true;
+            return false;
+        }
         /// <summary>Every finished stroke with the rule result (null when nothing matched); for diagnostics.</summary>
         public event Action<Stroke, string> OnStroke;
 
@@ -150,8 +148,6 @@ namespace Tecpatl
         string m_RawPose; int m_RawRun;
         MotionSample? m_ContactStart;
         readonly HashSet<ContactDragRule> m_DragFired = new HashSet<ContactDragRule>();
-        sealed class ExcState { public readonly List<(float t, float v, float[] p, float[] rel)> hist = new List<(float, float, float[], float[])>(); public bool outward; public float start, peak, baseV, quietUntil, flexAtPeak; public float[] at, relAt; }
-        readonly Dictionary<ExcursionRule, ExcState> m_Exc = new Dictionary<ExcursionRule, ExcState>();
 
         public GestureChain(PrimitiveSettings settings) { Settings = settings ?? new PrimitiveSettings(); }
 
@@ -204,20 +200,36 @@ namespace Tecpatl
                         if (holdOk && lastIn - since >= r.MinHold && s.Time - lastIn <= r.MaxRelease) released = s.Time;
                     }
                 }
-                // fire when the stable pose is a target within Within s of the release. Not "became stable after it": the
-                // labels during a held contact can flicker too fast to stabilize, leaving the earlier pose stable throughout
-                if (!float.IsNaN(released) && Array.IndexOf(r.To, m_Pose.Stable) >= 0 && s.Time - released <= r.Within)
+                if (!float.IsNaN(released))
                 {
-                    OnGesture?.Invoke(new GestureEvent { Time = s.Time, Name = r.Name, Position = Mid(s.Point, s.Body) });
-                    released = float.NaN;
+                    bool fire;
+                    float window;
+                    if (r.RequireImpulse)
+                    {
+                        // impulse-confirmed: the sound marks the snap; the end pose is optional
+                        fire = ImpulseNear(r, released) && (r.To == null || Array.IndexOf(r.To, m_Pose.Stable) >= 0);
+                        window = r.ImpulseAfter + (r.To == null ? 0f : r.Within);
+                    }
+                    else
+                    {
+                        // fire when the stable pose is a target within Within s of the release. Not "became stable after it":
+                        // the labels during a held contact can flicker too fast to stabilize, leaving the earlier pose stable
+                        fire = Array.IndexOf(r.To, m_Pose.Stable) >= 0 && s.Time - released <= r.Within;
+                        window = r.Within;
+                    }
+                    if (fire)
+                    {
+                        OnGesture?.Invoke(new GestureEvent { Time = s.Time, Name = r.Name, Position = Mid(s.Point, s.Body) });
+                        released = float.NaN;
+                    }
+                    else if (s.Time - released > window) released = float.NaN;
                 }
-                else if (!float.IsNaN(released) && s.Time - released > r.Within) released = float.NaN;
                 m_Rel[r] = (on, since, released, lastIn, peak);
             }
 
-            foreach (var r in ExcursionRules) PushExcursion(r, s);
-
+            bool wasOn = m_Contact.On;
             m_Contact.Push(s.Contact, Settings.ContactOn, Settings.ContactOff);
+            if (m_Contact.On != wasOn) OnContact?.Invoke(s.Time, m_Contact.On, s.Point);
             if (!Contact) { m_ContactStart = null; m_DragFired.Clear(); }
             else
             {
@@ -280,40 +292,6 @@ namespace Tecpatl
             m_Rel.Clear();
             m_RawPose = null; m_RawRun = 0;
             m_ContactStart = null; m_DragFired.Clear();
-            m_Exc.Clear();
-        }
-
-        void PushExcursion(ExcursionRule r, MotionSample s)
-        {
-            float[] axis = r.Axis == Axis.Right ? s.Right : r.Axis == Axis.Up ? s.Up : s.Forward;
-            float[] reference = r.Reference == Reference.Anchor ? s.Anchor : r.Reference == Reference.Body ? s.Body : null;
-            if (axis == null || s.Point == null || (r.Reference != Reference.None && reference == null)) return;
-            float v = r.Sign * Vec.Dot(reference == null ? s.Point : Vec.Sub(s.Point, reference), axis);
-            if (!m_Exc.TryGetValue(r, out var st)) m_Exc[r] = st = new ExcState();
-            float[] rel = s.Body != null ? Vec.Sub(s.Point, s.Body) : null;
-            st.hist.Add((s.Time, v, s.Point, rel));
-            while (st.hist.Count > 0 && s.Time - st.hist[0].t > r.BaseWindow + r.MaxDuration) st.hist.RemoveAt(0);
-            if (!st.outward)
-            {
-                if (s.Time < st.quietUntil) return;
-                int lo = -1;
-                for (int i = 0; i < st.hist.Count; i++)
-                    if (s.Time - st.hist[i].t <= r.BaseWindow && (lo < 0 || st.hist[i].v < st.hist[lo].v)) lo = i;
-                if (lo < 0 || v - st.hist[lo].v < r.Depth) return;
-                if (r.PoseAtStart != null && m_Pose.Stable != r.PoseAtStart) return;
-                st.outward = true; st.start = st.hist[lo].t; st.baseV = st.hist[lo].v; st.peak = v; st.at = (float[])st.hist[lo].p.Clone();
-                st.relAt = st.hist[lo].rel; st.flexAtPeak = rel != null && st.relAt != null ? Vec.Dist(rel, st.relAt) : 0f;
-                return;
-            }
-            if (v > st.peak) { st.peak = v; st.flexAtPeak = rel != null && st.relAt != null ? Vec.Dist(rel, st.relAt) : 0f; }
-            if (s.Time - st.start > r.MaxDuration) { st.outward = false; return; }
-            if (st.peak - v >= r.Return * (st.peak - st.baseV))
-            {
-                st.outward = false;
-                if (st.flexAtPeak < r.FlexMin || st.flexAtPeak >= r.RigidMax) return;
-                st.quietUntil = s.Time + r.Refractory;
-                OnGesture?.Invoke(new GestureEvent { Time = s.Time, Name = r.Name, Position = st.at });
-            }
         }
 
         static float[] Mid(float[] a, float[] b)
