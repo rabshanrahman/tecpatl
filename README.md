@@ -1,7 +1,7 @@
 # tecpatl
 Open source motion-gestures for hand tracking
 
-Jacknife is licensed for academic shit sniffers and a has stupid fucking patent. This is for the rest of us.
+Jacknife is licensed for academic shit sniffers and has a stupid fucking patent. This is for the rest of us.
 
 Few-example dynamic gesture recognizer for any point-sequence input (pen, hand joints, body joints,
 controllers). Pure C#, no engine dependencies, usable as a Unity package or plain .NET library.
